@@ -16,7 +16,8 @@ if config["DEFAULT"]["CONSUMER_KEY"].startswith("PLEASE_ENTER"):
 # 配置 Sandbox 环境参数
 CONSUMER_KEY = config["DEFAULT"]["CONSUMER_KEY"]
 CONSUMER_SECRET = config["DEFAULT"]["CONSUMER_SECRET"]
-BASE_URL = config["DEFAULT"]["SANDBOX_BASE_URL"]
+#BASE_URL = config["DEFAULT"]["SANDBOX_BASE_URL"]
+BASE_URL = config["DEFAULT"]["PROD_BASE_URL"]
 
 def save_tokens(access_token, access_token_secret):
     """将获取到的 Token 保存到 config.ini"""
@@ -26,6 +27,15 @@ def save_tokens(access_token, access_token_secret):
         config.write(configfile)
     print(">>> 令牌已保存到 config.ini (有效期至今日美东时间午夜)")
 
+def clear_tokens():
+    """清理 config.ini 中的过期 Token"""
+    if "ACCESS_TOKEN" in config["DEFAULT"]:
+        del config["DEFAULT"]["ACCESS_TOKEN"]
+    if "ACCESS_TOKEN_SECRET" in config["DEFAULT"]:
+        del config["DEFAULT"]["ACCESS_TOKEN_SECRET"]
+    with open('config.ini', 'w') as configfile:
+        config.write(configfile)
+
 def get_session():
     """获取会话：优先尝试读取本地 Token，如果没有则进行 OAuth 登录"""
     
@@ -34,7 +44,6 @@ def get_session():
     access_secret = config["DEFAULT"].get("ACCESS_TOKEN_SECRET")
 
     if access_token and access_secret:
-        # print("正在尝试使用本地保存的令牌...")
         session = OAuth1Session(
             consumer_key=CONSUMER_KEY,
             consumer_secret=CONSUMER_SECRET,
@@ -48,7 +57,7 @@ def get_session():
 
 def oauth_login():
     """执行 OAuth 1.0a 认证流程"""
-    print("正在连接 E*TRADE Sandbox 进行认证...")
+    print("\n正在连接 E*TRADE Sandbox 进行认证...")
     
     etrade = OAuth1Service(
         name="etrade",
@@ -93,10 +102,12 @@ def list_accounts(session):
     
     response = session.get(url)
 
+    # === 修改点：自动处理过期 Token ===
     if response.status_code == 401:
-        print("\n[错误] 本地令牌可能已过期 (401 Unauthorized)。")
-        print("请删除 config.ini 中的 ACCESS_TOKEN 行，或重新运行程序进行验证。")
-        return
+        print("\n[提示] 令牌已过期，正在重新登录...")
+        clear_tokens()
+        session = oauth_login() # 重新登录获取新 Session
+        response = session.get(url) # 重试请求
 
     if response.status_code == 200:
         data = response.json()
@@ -132,7 +143,7 @@ def get_account_balance(session, account):
     # 构造余额查询 API URL
     url = f"{BASE_URL}/v1/accounts/{account_id_key}/balance.json"
     
-    # E*TRADE API 要求 Header 包含 consumerkey，参数包含 instType 和 realTimeNAV
+    # E*TRADE API 要求 Header 包含 consumerkey
     params = {
         "instType": inst_type, 
         "realTimeNAV": "true"
@@ -145,9 +156,6 @@ def get_account_balance(session, account):
         data = response.json()
         if "BalanceResponse" in data:
             return data["BalanceResponse"]
-    else:
-        # print(f"无法获取账户 {account.get('accountDesc')} 的余额: {response.status_code}")
-        pass
     return None
 
 def cmd_account_balance(session):
@@ -157,12 +165,17 @@ def cmd_account_balance(session):
     url = f"{BASE_URL}/v1/accounts/list.json"
     response = session.get(url)
 
+    # === 修改点：自动处理过期 Token ===
     if response.status_code == 401:
-        print("\n[错误] 本地令牌可能已过期 (401 Unauthorized)。")
-        return
+        print("\n[提示] 令牌已过期，正在重新登录...")
+        clear_tokens()
+        session = oauth_login() # 重新登录
+        response = session.get(url) # 重试请求
 
     if response.status_code != 200:
         print(f"无法获取账户列表。状态码: {response.status_code}")
+        if response.status_code != 401:
+            print(response.text)
         return
 
     data = response.json()
@@ -183,6 +196,7 @@ def cmd_account_balance(session):
     for acc in accounts:
         desc = acc.get('accountDesc', 'N/A')
         
+        # 使用可能已经更新的 session
         balance_data = get_account_balance(session, acc)
         
         net_value = 0.0
@@ -209,9 +223,7 @@ def cmd_account_balance(session):
 
 def main():
     if len(sys.argv) >= 3 and sys.argv[1] == "account":
-        # 获取 Session (自动判断是读取本地还是重新登录)
         session = get_session()
-        
         command = sys.argv[2]
         
         if command == "list":
