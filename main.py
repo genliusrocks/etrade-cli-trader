@@ -91,10 +91,8 @@ def list_accounts(session):
     """获取并打印账户列表"""
     url = f"{BASE_URL}/v1/accounts/list.json"
     
-    # print(f"\n正在获取账户列表: {url}")
     response = session.get(url)
 
-    # 如果 Token 过期 (401 Unauthorized)，提示用户重新登录
     if response.status_code == 401:
         print("\n[错误] 本地令牌可能已过期 (401 Unauthorized)。")
         print("请删除 config.ini 中的 ACCESS_TOKEN 行，或重新运行程序进行验证。")
@@ -126,14 +124,105 @@ def list_accounts(session):
         print(f"请求失败 (状态码 {response.status_code}):")
         print(response.text)
 
+def get_account_balance(session, account):
+    """获取单个账户的余额详情"""
+    account_id_key = account.get("accountIdKey")
+    inst_type = account.get("institutionType", "BROKERAGE")
+    
+    # 构造余额查询 API URL
+    url = f"{BASE_URL}/v1/accounts/{account_id_key}/balance.json"
+    
+    # E*TRADE API 要求 Header 包含 consumerkey，参数包含 instType 和 realTimeNAV
+    params = {
+        "instType": inst_type, 
+        "realTimeNAV": "true"
+    }
+    headers = {"consumerkey": CONSUMER_KEY}
+
+    response = session.get(url, params=params, headers=headers)
+    
+    if response.status_code == 200:
+        data = response.json()
+        if "BalanceResponse" in data:
+            return data["BalanceResponse"]
+    else:
+        # print(f"无法获取账户 {account.get('accountDesc')} 的余额: {response.status_code}")
+        pass
+    return None
+
+def cmd_account_balance(session):
+    """处理 'account balance' 命令：获取所有账户列表并查询每个账户的余额"""
+    
+    # 1. 获取账户列表 (我们需要其中的 accountIdKey)
+    url = f"{BASE_URL}/v1/accounts/list.json"
+    response = session.get(url)
+
+    if response.status_code == 401:
+        print("\n[错误] 本地令牌可能已过期 (401 Unauthorized)。")
+        return
+
+    if response.status_code != 200:
+        print(f"无法获取账户列表。状态码: {response.status_code}")
+        return
+
+    data = response.json()
+    if "AccountListResponse" not in data or "Accounts" not in data["AccountListResponse"]:
+        print("名下没有账户。")
+        return
+
+    accounts = data["AccountListResponse"]["Accounts"]["Account"]
+    if isinstance(accounts, dict):
+        accounts = [accounts]
+
+    # 2. 打印表头
+    print(f"\n{'='*85}")
+    print(f"{'账户描述':<20} | {'净资产 (Net Value)':<18} | {'现金购买力':<15} | {'保证金购买力'}")
+    print(f"{'-'*85}")
+
+    # 3. 遍历账户查询余额
+    for acc in accounts:
+        desc = acc.get('accountDesc', 'N/A')
+        
+        balance_data = get_account_balance(session, acc)
+        
+        net_value = 0.0
+        cash_power = 0.0
+        margin_power = 0.0
+
+        if balance_data:
+            computed = balance_data.get("Computed", {})
+            real_time = computed.get("RealTimeValues", {})
+            
+            # 获取净值 (优先取实时值)
+            if "totalAccountValue" in real_time:
+                net_value = real_time["totalAccountValue"]
+            elif "totalAccountValue" in computed:
+                net_value = computed["totalAccountValue"]
+            
+            # 获取购买力
+            cash_power = computed.get("cashBuyingPower", 0.0)
+            margin_power = computed.get("marginBuyingPower", 0.0)
+
+        print(f"{desc:<20} | ${net_value:<17,.2f} | ${cash_power:<14,.2f} | ${margin_power:,.2f}")
+
+    print(f"{'='*85}\n")
+
 def main():
-    if len(sys.argv) >= 3 and sys.argv[1] == "account" and sys.argv[2] == "list":
+    if len(sys.argv) >= 3 and sys.argv[1] == "account":
         # 获取 Session (自动判断是读取本地还是重新登录)
         session = get_session()
-        # 获取列表
-        list_accounts(session)
+        
+        command = sys.argv[2]
+        
+        if command == "list":
+            list_accounts(session)
+        elif command == "balance":
+            cmd_account_balance(session)
+        else:
+             print(f"未知子命令: {command}")
+             print("用法: python main.py account [list|balance]")
     else:
-        print("用法: python main.py account list")
+        print("用法: python main.py account [list|balance]")
 
 if __name__ == "__main__":
     main()
